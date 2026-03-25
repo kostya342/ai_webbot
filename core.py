@@ -1,9 +1,6 @@
 import os
 import requests
 import re
-from dotenv import load_dotenv
-
-load_dotenv()
 
 class YandexAI:
     def __init__(self):
