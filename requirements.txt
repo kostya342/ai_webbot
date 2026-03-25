@@ -1,0 +1,6 @@
+customtkinter
+pygame
+requests
+streamlit
+aiogram
+python-dotenv
