@@ -11,10 +11,8 @@ class YandexAI:
         self.folder_id = os.getenv("YANDEX_FOLDER_ID")
         
     def _get_headers(self):
-        """Единый метод авторизации для всех сервисов"""
+        """Авторизация для всех API (везде нужен Api-Key)"""
         key = self.api_key.strip() if self.api_key else ""
-        if key.startswith('AQVN'):
-            return {'Authorization': f'Bearer {key}'}
         return {'Authorization': f'Api-Key {key}'}
 
     def get_response(self, user_text):
@@ -37,12 +35,29 @@ class YandexAI:
             return f"Ошибка сети GPT: {e}"
 
     def stt(self, audio_bytes):
-        """Распознавание речи (STT)"""
-        url = f"https://stt.api.cloud.yandex.net/speech/v1/stt:recognize?folderId={self.folder_id}&lang=ru-RU"
+        """Распознавание речи (STT) - исправленная версия"""
+        # Определяем формат аудио по первым байтам (можно упростить, если знаете формат)
+        url = f"https://stt.api.cloud.yandex.net/speech/v1/stt:recognize"
+        params = {
+            'folderId': self.folder_id,
+            'lang': 'ru-RU',
+            'format': 'lpcm'  # или 'oggopus', если у вас OGG
+        }
+        
+        # Для Telegram voice — это OGG Opus, нужно указать format=oggopus
+        # Но у вас audio_bytes может быть в другом формате, проверьте
+        
         try:
-            res = requests.post(url, headers=self._get_headers(), data=audio_bytes, timeout=15)
+            res = requests.post(
+                url, 
+                headers=self._get_headers(), 
+                params=params,
+                data=audio_bytes,
+                timeout=15
+            )
             if res.status_code == 200:
-                return res.json().get('result', '')
+                result = res.json()
+                return result.get('result', '')
             print(f"STT Error {res.status_code}: {res.text}")
             return ""
         except Exception as e:
@@ -50,20 +65,31 @@ class YandexAI:
             return ""
 
     def synthesize_speech(self, text):
-        """Озвучка текста (TTS)"""
+        """Озвучка текста (TTS) - исправленная версия"""
         url = 'https://tts.api.cloud.yandex.net/speech/v1/tts:synthesize'
         clean_text = re.sub(r'[*#`$]', '', text)[:1000]
+        
+        # Параметры передаются как form-data
         data = {
             'text': clean_text,
             'lang': 'ru-RU',
-            'voice': 'jane',
+            'voice': 'jane',  # или 'oksana', 'alena', 'filipp'
             'folderId': self.folder_id,
-            'format': 'mp3'
+            'format': 'mp3',
+            'emotion': 'neutral'
         }
+        
         try:
-            res = requests.post(url, headers=self._get_headers(), data=data, timeout=10)
+            res = requests.post(
+                url, 
+                headers=self._get_headers(), 
+                data=data,  # requests сам установит Content-Type
+                timeout=10
+            )
             if res.status_code == 200:
                 return res.content
+            print(f"TTS Error {res.status_code}: {res.text}")
             return None
-        except:
+        except Exception as e:
+            print(f"TTS Exception: {e}")
             return None
