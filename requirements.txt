@@ -2,5 +2,4 @@ aiogram
 python-dotenv
 requests
 streamlit
-google-generativeai
 streamlit-mic-recorder
