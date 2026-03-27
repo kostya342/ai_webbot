@@ -1,74 +1,51 @@
 import streamlit as st
-from core import GeminiAI
+from core import YandexAI
 import base64
 from streamlit_mic_recorder import mic_recorder
 
-st.set_page_config(page_title="AI Assistant", page_icon="🤖", layout="wide")
+st.set_page_config(page_title="Умный Ассистент", page_icon="🎙️")
 
 if 'client' not in st.session_state:
-    st.session_state.client = GeminiAI()
-if 'messages' not in st.session_state:
-    st.session_state.messages = []
+    st.session_state.client = YandexAI()
+if 'chat' not in st.session_state:
+    st.session_state.chat = []
 
-st.title("Умная колонка (Gemini + Yandex TTS)")
+st.title("🎙️ Голосовой помощник")
 
-col1, col2 = st.columns([3, 1])
-with col2:
-    auto_speak = st.checkbox("Авто-озвучка", value=True)
-    if st.button("Очистить историю"):
-        st.session_state.client.clear_history()
-        st.session_state.messages = []
+# Кнопка записи в сайдбаре
+with st.sidebar:
+    st.header("Управление")
+    audio = mic_recorder(start_prompt="Записать вопрос", stop_prompt="Отправить", key='rec')
+    auto_speak = st.checkbox("Озвучивать ответы", value=True)
+    if st.button("Очистить чат"):
+        st.session_state.chat = []
         st.rerun()
 
-# Отрисовка истории
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+# Отображение сообщений
+for m in st.session_state.chat:
+    with st.chat_message(m['role']):
+        st.write(m['text'])
 
-# Сайдбар для голосового ввода
-with st.sidebar:
-    st.markdown("### 🎙️ Голосовой ввод")
-    st.caption("Нажми, чтобы сказать голосом")
-    # Кнопка записи аудио из браузера
-    audio = mic_recorder(start_prompt="🔴 Начать запись", stop_prompt="⏹ Остановить", key='recorder')
-
-# Текстовый ввод
-prompt = st.chat_input("Или введите вопрос текстом...")
-
-# Логика обработки
-user_input_text = prompt
-audio_bytes = None
+# Логика ввода
+user_query = st.chat_input("Спросите что-нибудь...")
 
 if audio:
-    audio_bytes = audio['bytes']
-    user_input_text = "🎙 [Голосовое сообщение]"
+    with st.spinner("Распознаю голос..."):
+        user_query = st.session_state.client.stt(audio['bytes'])
 
-if user_input_text or audio_bytes:
-    st.session_state.messages.append({"role": "user", "content": user_input_text})
+if user_query:
+    st.session_state.chat.append({"role": "user", "text": user_query})
     with st.chat_message("user"):
-        st.markdown(user_input_text)
-    
+        st.write(user_query)
+
     with st.chat_message("assistant"):
-        with st.spinner("Думаю и ищу в интернете..."):
+        with st.spinner("Думаю..."):
+            ans = st.session_state.client.get_response(user_query)
+            st.write(ans)
+            st.session_state.chat.append({"role": "assistant", "text": ans})
             
-            # Если есть аудио, шлем байты аудио (mic_recorder пишет в WAV)
-            if audio_bytes:
-                response_text = st.session_state.client.get_response_from_audio(audio_bytes, mime_type="audio/wav")
-            else:
-                response_text = st.session_state.client.get_response(user_input_text)
-            
-            st.markdown(response_text)
-            
-            # Озвучка Яндексом
             if auto_speak:
-                audio_data = st.session_state.client.synthesize_speech(response_text)
+                audio_data = st.session_state.client.synthesize_speech(ans)
                 if audio_data:
-                    audio_b64 = base64.b64encode(audio_data).decode('utf-8')
-                    st.components.v1.html(f"""
-                        <script>
-                        const audio = new Audio('data:audio/mp3;base64,{audio_b64}');
-                        audio.play().catch(e => console.log(e));
-                        </script>
-                    """, height=0)
-            
-            st.session_state.messages.append({"role": "assistant", "content": response_text})
+                    b64 = base64.b64encode(audio_data).decode()
+                    st.markdown(f'<audio src="data:audio/mp3;base64,{b64}" autoplay>', unsafe_allow_html=True)
