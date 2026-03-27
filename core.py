@@ -1,96 +1,80 @@
 import os
 import requests
-import re
+import google.generativeai as genai
+from dotenv import load_dotenv
 
-class YandexAI:
+load_dotenv()
+
+class GeminiAI:
     def __init__(self):
-        self.api_key = os.getenv("YANDEX_API_KEY")
-        self.folder_id = os.getenv("YANDEX_FOLDER_ID")
-        self.messages = [
-            {
-                "role": "system",
-                "text": "Ты полезный ассистент. Отвечай подробно. Формулы пиши в формате LaTeX внутри $$...$$."
-            }
-        ]
-
-    def get_auth_header(self):
-        if not self.api_key:
-            return {}
-        if self.api_key.startswith('AQVN') or self.api_key.startswith('AKIA'):
-            return {'Authorization': f'Api-Key {self.api_key}'}
-        elif self.api_key.startswith('AQV'):
-            return {'Authorization': f'Bearer {self.api_key}'}
-        return {'Authorization': f'Api-Key {self.api_key}'}
-
-    def prepare_speech(self, text):
-        text = re.sub(r'\$\$(.*?)\$\$', r'\1', text)
-        text = re.sub(r'\$', '', text)
-        text = re.sub(r'\\\((.*?)\\\)', r'\1', text)
-        text = re.sub(r'\\\[(.*?)\\\]', r'\1', text)
-        text = re.sub(r'-\s*([A-Za-z])\b', r' \1', text)
-        text = re.sub(r'\\frac\{([^}]+)\}\{([^}]+)\}', r'\1 разделить на \2', text)
-        text = text.replace('=', ' равно ')
-        text = text.replace('+', ' плюс ')
-        text = text.replace('-', ' минус ')
-        text = re.sub(r'(\d)\s*\*\s*(\d)', r'\1 умножить на \2', text)
-        text = text.replace('^', ' в степени ')
+        # Инициализация Gemini
+        self.gemini_key = os.getenv("GEMINI_API_KEY")
+        if not self.gemini_key:
+            raise ValueError("Нет ключа GEMINI_API_KEY в .env")
+            
+        genai.configure(api_key=self.gemini_key)
         
-        greek = {
-            '\\alpha': 'альфа', '\\beta': 'бета', '\\gamma': 'гамма',
-            '\\delta': 'дельта', '\\pi': 'пи', '\\sigma': 'сигма',
-            '\\omega': 'омега', '\\theta': 'тета'
-        }
-        for latex, word in greek.items():
-            text = text.replace(latex, word)
+        # Включаем поиск Google и настраиваем промпт от багов с формулами
+        self.model = genai.GenerativeModel(
+            model_name="gemini-1.5-flash",
+            tools=[{"google_search_retrieval": {}}],
+            system_instruction=(
+                "Ты умный и полезный ИИ-ассистент. "
+                "ВАЖНО: Никогда не используй символы $ или $$ для математических формул. "
+                "Пиши математику обычным текстом, например: x^2 + y = z. "
+                "Твои ответы читают в Telegram, избегай сложной разметки, которая ломает парсер."
+            )
+        )
+        self.chat = self.model.start_chat(history=[])
         
-        text = re.sub(r'\s+', ' ', text)
-        return text.strip()
+        # Данные Яндекса для озвучки (TTS)
+        self.yandex_api_key = os.getenv("YANDEX_API_KEY")
+        self.yandex_folder_id = os.getenv("YANDEX_FOLDER_ID")
 
     def get_response(self, user_text):
-        self.messages.append({"role": "user", "text": user_text})
-        
-        headers = self.get_auth_header()
-        headers['x-folder-id'] = self.folder_id
-        headers['Content-Type'] = 'application/json'
-        
         try:
-            response = requests.post(
-                'https://llm.api.cloud.yandex.net/foundationModels/v1/completion',
-                headers=headers,
-                json={
-                    "modelUri": f"gpt://{self.folder_id}/yandexgpt/latest",
-                    "completionOptions": {"stream": False, "temperature": 0.7, "maxTokens": 1000},
-                    "messages": self.messages
-                }
-            )
-            if response.status_code == 200:
-                reply = response.json()['result']['alternatives'][0]['message']['text']
-                self.messages.append({"role": "assistant", "text": reply})
-                return reply
-            else:
-                return f"Ошибка API: {response.status_code}"
+            response = self.chat.send_message(user_text)
+            return response.text
         except Exception as e:
-            return f"Ошибка: {str(e)}"
+            return f"Ошибка Gemini: {str(e)}"
+
+    def get_response_from_audio(self, audio_bytes, mime_type="audio/ogg"):
+        # Нейронка слушает аудио напрямую!
+        try:
+            prompt = "Послушай это аудио и ответь на вопрос или выполни просьбу."
+            audio_part = {"mime_type": mime_type, "data": audio_bytes}
+            response = self.chat.send_message([prompt, audio_part])
+            return response.text
+        except Exception as e:
+            return f"Ошибка обработки аудио: {str(e)}"
+
+    def clear_history(self):
+        self.chat = self.model.start_chat(history=[])
 
     def synthesize_speech(self, text):
-        if not self.api_key or not self.folder_id:
+        if not self.yandex_api_key or not self.yandex_folder_id:
             return None
+            
+        headers = {'Content-Type': 'application/x-www-form-urlencoded'}
+        if self.yandex_api_key.startswith('Api-Key') or self.yandex_api_key.startswith('Bearer'):
+             headers['Authorization'] = self.yandex_api_key
+        else:
+             headers['Authorization'] = f'Api-Key {self.yandex_api_key}'
         
-        text = self.prepare_speech(text)[:1500]
-        headers = self.get_auth_header()
-        headers['Content-Type'] = 'application/x-www-form-urlencoded'
+        # Чистим текст от звездочек Markdown, чтобы Яндекс не спотыкался
+        clean_text = text.replace('*', '').replace('#', '').strip()[:1500]
         
         try:
             response = requests.post(
                 'https://tts.api.cloud.yandex.net/speech/v1/tts:synthesize',
                 headers=headers,
                 data={
-                    'text': text,
+                    'text': clean_text,
                     'lang': 'ru-RU',
                     'voice': 'jane',
-                    'folderId': self.folder_id,
+                    'folderId': self.yandex_folder_id,
                     'format': 'mp3',
-                    'speed': '0.9'
+                    'speed': '1.0'
                 }
             )
             if response.status_code == 200:
@@ -98,11 +82,3 @@ class YandexAI:
         except Exception:
             pass
         return None
-
-    def clear_history(self):
-        self.messages = [
-            {
-                "role": "system",
-                "text": "Ты полезный ассистент. Отвечай подробно. Формулы пиши в формате LaTeX внутри $$...$$."
-            }
-        ]
