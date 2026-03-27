@@ -1,87 +1,113 @@
 import os
 import requests
 import google.generativeai as genai
+from google.generativeai.types import content_types
 from dotenv import load_dotenv
 
 load_dotenv()
 
 class GeminiAI:
     def __init__(self):
+        # 1. Настройка Gemini
         self.gemini_key = os.getenv("GEMINI_API_KEY")
         if not self.gemini_key:
             raise ValueError("GEMINI_API_KEY не найден")
             
         genai.configure(api_key=self.gemini_key)
         
-        # Автоматический подбор модели
-        self.model_name = self._get_available_model()
-        print(f"Использую модель: {self.model_name}")
+        # Инструкция для "умной колонки" и исправления формул
+        self.instruction = (
+            "Ты — умный голосовой помощник. Отвечай кратко и понятно. "
+            "НИКОГДА не используй символы $ или $$ для формул. "
+            "Пиши математику обычными буквами (например: x в квадрате плюс y равно 10)."
+        )
 
-        # Пробуем инициализировать с поиском, если не выйдет — без него
+        # Пытаемся подключить поиск с НОВЫМ названием инструмента
         try:
+            # В новых версиях API инструмент называется 'google_search'
+            tools = [ {'google_search': {}} ] 
+            
             self.model = genai.GenerativeModel(
-                model_name=self.model_name,
-                tools=[{"google_search_retrieval": {}}], # Умный поиск
-                system_instruction="Ты краткий ИИ-помощник. Не используй $ в формулах."
+                model_name="gemini-1.5-flash",
+                tools=tools,
+                system_instruction=self.instruction
             )
-            # Проверочный запрос для поиска
+            # Проверка: создаем чат
             self.chat = self.model.start_chat(history=[])
-        except Exception:
-            print("Поиск Google недоступен, запускаю без него...")
+        except Exception as e:
+            print(f"Поиск не удалось подключить ({e}), запускаю чистую модель...")
             self.model = genai.GenerativeModel(
-                model_name=self.model_name,
-                system_instruction="Ты краткий ИИ-помощник. Не используй $ в формулах."
+                model_name="gemini-1.5-flash",
+                system_instruction=self.instruction
             )
             self.chat = self.model.start_chat(history=[])
 
+        # 2. Настройка Yandex TTS
         self.yandex_api_key = os.getenv("YANDEX_API_KEY")
         self.yandex_folder_id = os.getenv("YANDEX_FOLDER_ID")
 
-    def _get_available_model(self):
-        """Проверяет, какие модели доступны твоему ключу"""
-        try:
-            models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-            # Приоритет выбора
-            for preferred in ['models/gemini-1.5-flash', 'models/gemini-1.5-flash-latest', 'models/gemini-pro']:
-                if preferred in models:
-                    return preferred
-            return models[0] if models else 'gemini-1.5-flash'
-        except Exception:
-            return 'gemini-1.5-flash' # Фоллбек
-
     def get_response(self, user_text):
+        """Получение текста с обработкой ошибок"""
         try:
             response = self.chat.send_message(user_text)
             return response.text
         except Exception as e:
-            return f"Ошибка при ответе: {str(e)}"
+            # Если чат сломался, пробуем одиночный запрос
+            try:
+                fallback = self.model.generate_content(user_text)
+                return fallback.text
+            except Exception as e2:
+                return f"Ошибка Gemini: {str(e2)}. Проверь, включен ли VPN на сервере."
 
     def get_response_from_audio(self, audio_bytes, mime_type="audio/ogg"):
+        """Понимание аудио (голоса) напрямую"""
         try:
-            # Для аудио лучше использовать прямую генерацию
+            # Создаем структуру для передачи аудио
+            audio_data = {
+                "mime_type": mime_type,
+                "data": audio_bytes
+            }
+            # Шлем аудио в модель
             response = self.model.generate_content([
-                "Послушай и ответь кратко на русском.",
-                {"mime_type": mime_type, "data": audio_bytes}
+                "Послушай и ответь на русском языке кратко.",
+                audio_data
             ])
             return response.text
         except Exception as e:
-            return f"Ошибка аудио: {str(e)}"
+            return f"Ошибка обработки аудио: {str(e)}"
 
     def synthesize_speech(self, text):
+        """Озвучка текста через Яндекс (TTS)"""
         if not self.yandex_api_key or not self.yandex_folder_id:
             return None
         
-        headers = {'Authorization': f'Api-Key {self.yandex_api_key}'} if not self.yandex_api_key.startswith('AQV') else {'Authorization': f'Bearer {self.yandex_api_key}'}
+        # Убираем всё, что мешает озвучке (Markdown знаки)
+        clean_text = text.replace('*', '').replace('#', '').replace('`', '').strip()
+        
+        headers = {}
+        if self.yandex_api_key.startswith('AQVN'):
+            headers['Authorization'] = f'Bearer {self.yandex_api_key}'
+        else:
+            headers['Authorization'] = f'Api-Key {self.yandex_api_key}'
         
         try:
-            res = requests.post(
+            response = requests.post(
                 'https://tts.api.cloud.yandex.net/speech/v1/tts:synthesize',
                 headers=headers,
-                data={'text': text.replace('*', '')[:1000], 'lang': 'ru-RU', 'voice': 'jane', 'folderId': self.yandex_folder_id, 'format': 'mp3'}
+                data={
+                    'text': clean_text[:1500],
+                    'lang': 'ru-RU',
+                    'voice': 'jane',
+                    'folderId': self.yandex_folder_id,
+                    'format': 'mp3',
+                    'speed': '1.0'
+                }
             )
-            return res.content if res.status_code == 200 else None
+            if response.status_code == 200:
+                return response.content
         except:
-            return None
+            pass
+        return None
 
     def clear_history(self):
         self.chat = self.model.start_chat(history=[])
