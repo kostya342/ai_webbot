@@ -1,54 +1,38 @@
 import asyncio
-import logging
 import os
-from aiogram import Bot, Dispatcher, types, F
+from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
-from core import GeminiAI
+from core import YandexAI
 from dotenv import load_dotenv
 
 load_dotenv()
-
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-if not TOKEN:
-    raise ValueError("Нет токена бота")
-
-logging.basicConfig(level=logging.INFO)
-bot = Bot(token=TOKEN)
+bot = Bot(token=os.getenv("TELEGRAM_BOT_TOKEN"))
 dp = Dispatcher()
-ai = GeminiAI()
+ai = YandexAI()
 
 @dp.message(Command("start"))
-async def cmd_start(message: types.Message):
-    await message.answer("Привет! Я AI ассистент с доступом в интернет. Пиши текст или отправляй голосовые!")
+async def start(m: types.Message):
+    await m.answer("Привет! Я понимаю текст и голосовые сообщения.")
 
-@dp.message(Command("clear"))
-async def cmd_clear(message: types.Message):
-    ai.clear_history()
-    await message.answer("История диалога очищена.")
-
-# Обработка голосовых сообщений
 @dp.message(F.voice)
-async def handle_voice(message: types.Message):
-    await bot.send_chat_action(message.chat.id, action="typing")
-    try:
-        # Скачиваем голосовое сообщение из ТГ
-        file_id = message.voice.file_id
-        file = await bot.get_file(file_id)
-        downloaded_file = await bot.download_file(file.file_path)
-        audio_bytes = downloaded_file.read()
+async def voice_handler(m: types.Message):
+    # Скачиваем голосовое
+    file = await bot.get_file(m.voice.file_id)
+    content = await bot.download_file(file.file_path)
+    
+    # Распознаем через Яндекс
+    text = ai.stt(content.read())
+    if not text:
+        await m.answer("Не удалось разобрать голос.")
+        return
         
-        # Шлем в Gemini (Телега использует формат OGG)
-        response_text = ai.get_response_from_audio(audio_bytes, mime_type="audio/ogg")
-        await message.answer(response_text)
-    except Exception as e:
-        await message.answer(f"Не удалось распознать голос: {e}")
+    res = ai.get_response(text)
+    await m.answer(f"*(Вы сказали: {text})*\n\n{res}", parse_mode="Markdown")
 
-# Обработка текста
 @dp.message(F.text)
-async def handle_message(message: types.Message):
-    await bot.send_chat_action(message.chat.id, action="typing")
-    response_text = ai.get_response(message.text)
-    await message.answer(response_text)
+async def text_handler(m: types.Message):
+    res = ai.get_response(m.text)
+    await m.answer(res)
 
 async def main():
     await dp.start_polling(bot)
