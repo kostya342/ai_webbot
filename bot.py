@@ -19,6 +19,8 @@ async def voice_handler(m: types.Message):
     # Скачиваем голосовое
     file = await bot.get_file(m.voice.file_id)
     content = await bot.download_file(file.file_path)
+    audio_bytes = content.getvalue()  # или content.read()
+    text = ai.stt(audio_bytes)
     
     # Распознаем через Яндекс
     text = ai.stt(content.read())
