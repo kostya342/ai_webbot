@@ -1,79 +1,65 @@
 import os
 import requests
+import re
 import json
 from dotenv import load_dotenv
 
 load_dotenv()
 
-class GeminiAI:
+class YandexAI:
     def __init__(self):
-        self.api_key = os.getenv("GEMINI_API_KEY")
-        # Используем стабильную версию v1beta или v1
-        self.url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={self.api_key}"
-        
-        self.yandex_api_key = os.getenv("YANDEX_API_KEY")
-        self.yandex_folder_id = os.getenv("YANDEX_FOLDER_ID")
-        
-        # История сообщений для контекста
-        self.history = []
+        self.api_key = os.getenv("YANDEX_API_KEY")
+        self.folder_id = os.getenv("YANDEX_FOLDER_ID")
+        self.messages = []
+        # Умный поиск включается через промпт или спец. поле API (зависит от версии)
+        self.system_text = "Ты умный помощник. Отвечай кратко. Не используй $ для формул. Если нужно, ищи информацию в интернете."
+
+    def get_auth_header(self):
+        if self.api_key.startswith('AQVN'): # IAM-токен
+            return {'Authorization': f'Bearer {self.api_key}'}
+        return {'Authorization': f'Api-Key {self.api_key}'} # API-ключ
 
     def get_response(self, user_text):
-        # Добавляем сообщение пользователя в историю
-        self.history.append({"role": "user", "parts": [{"text": user_text}]})
-        
-        # Ограничиваем историю (последние 10 сообщений), чтобы не перегружать
+        url = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
         payload = {
-            "contents": self.history[-10:],
-            "system_instruction": {
-                "parts": [{"text": "Ты краткий помощник. Не используй символы $ в формулах."}]
-            }
+            "modelUri": f"gpt://{self.folder_id}/yandexgpt/latest",
+            "completionOptions": {"stream": False, "temperature": 0.3, "maxTokens": "2000"},
+            "messages": [
+                {"role": "system", "text": self.system_text},
+                {"role": "user", "text": user_text}
+            ]
         }
-        
-        headers = {'Content-Type': 'application/json'}
-        
         try:
-            response = requests.post(self.url, headers=headers, data=json.dumps(payload))
-            result = response.json()
-            
-            if response.status_code == 200:
-                # Достаем текст ответа
-                bot_text = result['candidates'][0]['content']['parts'][0]['text']
-                # Сохраняем ответ бота в историю
-                self.history.append({"role": "model", "parts": [{"text": bot_text}]})
-                return bot_text
-            else:
-                error_msg = result.get('error', {}).get('message', 'Unknown error')
-                return f"Ошибка API ({response.status_code}): {error_msg}"
+            res = requests.post(url, headers=self.get_auth_header(), json=payload)
+            if res.status_code == 200:
+                return res.json()['result']['alternatives'][0]['message']['text']
+            return f"Ошибка YandexGPT: {res.status_code}"
         except Exception as e:
-            return f"Ошибка запроса: {str(e)}"
+            return f"Ошибка связи: {e}"
 
-    def get_response_from_audio(self, audio_bytes, mime_type="audio/ogg"):
-        # Для простоты: на сайте и в боте проще сначала получить текст, 
-        # но Gemini поддерживает аудио через base64 в REST API.
-        # Пока сделаем заглушку, чтобы проверить, работает ли хотя бы текст.
-        return "Голосовой ввод временно недоступен, попробуй текст."
+    def stt(self, audio_bytes):
+        """Распознавание речи (вместо Vosk)"""
+        url = f"https://stt.api.cloud.yandex.net/speech/v1/stt:recognize?folderId={self.folder_id}&lang=ru-RU"
+        try:
+            res = requests.post(url, headers=self.get_auth_header(), data=audio_bytes)
+            if res.status_code == 200:
+                return res.json().get('result', '')
+        except:
+            pass
+        return ""
 
     def synthesize_speech(self, text):
-        if not self.yandex_api_key or not self.yandex_folder_id:
-            return None
-        
-        headers = {'Authorization': f'Api-Key {self.yandex_api_key}'} if not self.yandex_api_key.startswith('AQV') else {'Authorization': f'Bearer {self.yandex_api_key}'}
-        
+        """Озвучка текста"""
+        clean_text = re.sub(r'[*#`]', '', text).replace('$', '')[:1000]
+        url = 'https://tts.api.cloud.yandex.net/speech/v1/tts:synthesize'
         try:
-            res = requests.post(
-                'https://tts.api.cloud.yandex.net/speech/v1/tts:synthesize',
-                headers=headers,
-                data={
-                    'text': text.replace('*', '')[:1000],
-                    'lang': 'ru-RU',
-                    'voice': 'jane',
-                    'folderId': self.yandex_folder_id,
-                    'format': 'mp3'
-                }
-            )
+            res = requests.post(url, headers=self.get_auth_header(), data={
+                'text': clean_text, 'lang': 'ru-RU', 'voice': 'jane',
+                'folderId': self.folder_id, 'format': 'mp3'
+            })
             return res.content if res.status_code == 200 else None
         except:
             return None
 
     def clear_history(self):
-        self.history = []
+        self.messages = []
